@@ -200,7 +200,7 @@ test('model precedence is per delivery and invalid saved settings cannot silentl
   assert.deepEqual(store.modelFor(alice, channel.id, piDefault), piDefault);
 });
 
-test('overlapping writable directories queue before claim, while sibling trees run concurrently', async t => {
+test('same, parent, child, symlink and sibling writable directories all start concurrently', async t => {
   const { store, dir, runner, workspace: w } = fixture(t);
   assert.throws(() => new Store(store.dir), /locked/);
   const project = join(dir, 'project'); mkdirSync(project);
@@ -216,17 +216,13 @@ test('overlapping writable directories queue before claim, while sibling trees r
   });
   const messages = agents.map(a => w.humanDirect(a.id, 'work'));
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(runner.calls.map(c => c.agent.name), ['parent', 'sibling']);
-  for (const message of messages.slice(1, 4)) assert.equal(store.db.prepare('SELECT used FROM chains WHERE id=?').get(message.chainId)?.used, 0);
-  for (const [current, next] of [['parent', 'same'], ['same', 'child'], ['child', 'linked']]) {
-    releases.get(current)!(); await new Promise(resolve => setImmediate(resolve));
-    assert.equal(runner.calls.at(-1)?.agent.name, next);
-  }
-  releases.get('linked')!(); releases.get('sibling')!(); await w.idle();
+  assert.deepEqual(runner.calls.map(c => c.agent.name), ['parent', 'same', 'child', 'linked', 'sibling']);
+  for (const message of messages) assert.equal(store.db.prepare('SELECT used FROM chains WHERE id=?').get(message.chainId)?.used, 1);
+  releases.forEach(release => release()); await w.idle();
   assert.ok(store.deliveries().every(d => d.state === 'done'));
 });
 
-test('assistant turns respect directory locks; cancellation and failure release the tree', async t => {
+test('channel assistant responds while a same-directory worker runs; failure and cancellation stay isolated', async t => {
   const { store, dir, runner, workspace: w, channel } = fixture(t);
   const assistant = store.ensureChannelAssistant(channel.id, dir, { provider: 'demo', id: 'demo' });
   const worker = store.createAgent({ name: 'coder', role: 'write', provider: 'demo', model: 'demo', cwd: dir });
@@ -234,8 +230,10 @@ test('assistant turns respect directory locks; cancellation and failure release 
     ? new Promise(resolve => turn.signal.addEventListener('abort', () => resolve(), { once: true }))
     : Promise.reject(new Error('failed assistant turn'));
   w.humanDirect(worker.id, 'hold tree'); await new Promise(resolve => setImmediate(resolve));
-  w.humanChannel(channel.id, 'assistant queued'); await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(runner.calls.map(c => c.agent.id), [worker.id]);
+  w.humanChannel(channel.id, 'assistant responds now'); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(runner.calls.map(c => c.agent.id), [worker.id, assistant.id]);
+  assert.equal(w.status(worker.id), 'working');
+  assert.equal(store.deliveries(assistant.id)[0].state, 'failed');
   w.stop(worker.id); await w.idle();
   assert.equal(store.deliveries(worker.id)[0].state, 'interrupted');
   assert.equal(store.deliveries(assistant.id)[0].state, 'failed');

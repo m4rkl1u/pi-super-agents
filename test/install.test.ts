@@ -116,6 +116,6 @@ test('distribution includes the CLI and uninstall scripts but no local state, te
   let files: string[] = [];
   assert.doesNotThrow(() => { files = JSON.parse(result.stdout)[0].files.map((file: { path: string }) => file.path); });
   for (const file of ['package.json', 'README.md', 'dist/src/cli.js', 'scripts/install.sh', 'scripts/uninstall.sh']) assert.ok(files.includes(file), file);
-  assert.ok(files.every(file => /^(package\.json|README\.md|dist\/src\/.*\.js|docs\/.*\.md|scripts\/(un)?install\.sh)$/.test(file)), files.join('\n'));
+  assert.ok(files.every(file => /^(package\.json|README\.md|LICENSE|dist\/src\/.*\.js|docs\/.*\.md|scripts\/(un)?install\.sh)$/.test(file)), files.join('\n'));
   assert.equal(pkg.bin['super-agents'], 'dist/src/cli.js');
 });

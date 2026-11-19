@@ -36,7 +36,7 @@
 GitHub / Feishu
     → Trigger（不可变事件）→ Thread（讨论上下文）
     → Gate（程序检查权限）→ Assessment（模型判断语义）
-    → Decision → Ticket + Mandate（任务与授权范围）
+→ Decision → Ticket + Mandate（任务与授权范围）
     → Assignment（一次执行尝试）→ Worker Session
     → Report → Outbox → 原讨论渠道
 ```

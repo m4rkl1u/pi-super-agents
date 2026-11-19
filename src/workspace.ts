@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import type { ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 import type { SlashCommand } from '@earendil-works/pi-tui';
-import { Store, MAX_AGENTS, overlaps, validText, validName, type Agent, type Delivery, type Message, type WorkerRequest, type ToolProfile } from './store.js';
+import { Store, MAX_AGENTS, validText, validName, type Agent, type Delivery, type Message, type WorkerRequest, type ToolProfile } from './store.js';
 
 export interface Outgoing { channel?: string; to?: string[]; text: string }
 export interface WorkerSpec { name: string; role: string; task: string }
@@ -183,11 +183,6 @@ export class Workspace extends EventEmitter {
       if (this.active.size >= this.concurrency) continue;
       if (!this.mayDeliver(d, m)) { this.store.finish(d.id, 'cancelled', 'Membership changed before delivery'); continue; }
       const a = this.store.agent(d.agentId);
-      // Lock the entire writable turn, including tools, retries, compaction and cancellation.
-      if (a.tools === 'code' && [...this.active.keys()].some(id => {
-        const other = this.store.agent(id);
-        return other.tools === 'code' && overlaps(a.cwd, other.cwd);
-      })) continue;
       if (!this.store.claim(d.id)) continue;
       const active: Active = { delivery: d, controller: new AbortController(), done: Promise.resolve(), sends: 0, published: false, steered: false };
       this.active.set(a.id, active);

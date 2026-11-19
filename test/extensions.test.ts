@@ -34,6 +34,8 @@ export default function(pi) {
   pi.on('session_shutdown', () => pi.appendEntry('counter-shutdown', {count}));
   pi.registerTool({ name:'counter', label:'Counter', description:'Test counter', parameters:{type:'object',properties:{}},
     execute: async (_id, _args, _signal, _update, ctx) => ({content:[{type:'text',text:'COUNTER_RESULT:' + bump(ctx)}],details:{count}}) });
+  pi.registerTool({ name:'nested_write', label:'Nested write', description:'Test nested guard', parameters:{type:'object',properties:{}},
+    execute: async (_id, _args, _signal, _update, ctx) => (await ctx.executeTool('write', {path:'nested.txt',content:'reconciled'})).result });
   pi.registerCommand('bump', { description:'Bump fixture', handler:async (_args,ctx) => { bump(ctx); } });
   pi.registerCommand('reset-session', { handler:async (_args,ctx) => { await ctx.newSession(); } });
   pi.registerCommand('outside-turn', { handler:async () => { await pi.sendUserMessage('UNQUEUED_REQUEST'); } });
@@ -129,6 +131,16 @@ test('native packages, trust, tools, commands, templates and UI remain scoped to
   assert.ok(requests.at(-1)?.tools?.some(t => t.function.name === 'counter'), JSON.stringify({ requests: requests.length, tools: runner.inspect(alice).tools, deliveries: store.deliveries(alice.id), messages: runner.inspect(alice).messages.filter(m => (m as {role?:string}).role !== 'system').slice(-3) }));
   assert.ok(JSON.stringify(runner.inspect(alice).messages).includes('COUNTER_RESULT:3'));
   assert.ok(runner.inspect(alice).system.includes('Skill for automatic discovery'));
+  writeFileSync(join(cwd, 'nested.txt'), 'unread original');
+  nextTool = { name: 'nested_write', args: {} };
+  await ui.submit('Attempt nested overwrite'); await workspace.idle();
+  assert.equal(readFileSync(join(cwd, 'nested.txt'), 'utf8'), 'unread original', 'nested executeTool cannot bypass the file guard');
+  assert.ok(JSON.stringify(runner.inspect(alice).messages).includes('unread or changed since your last read'));
+  nextTool = { name: 'read', args: { path: 'nested.txt' } };
+  await ui.submit('Read before editing'); await workspace.idle();
+  nextTool = { name: 'nested_write', args: {} };
+  await ui.submit('Apply reconciled nested edit'); await workspace.idle();
+  assert.equal(readFileSync(join(cwd, 'nested.txt'), 'utf8'), 'reconciled');
   const file = store.agent(alice.id).sessionFile; assert.ok(file);
   await runner.release(alice.id);
   assert.ok(entries(alice.id).some(e => e.type === 'custom' && e.customType === 'counter-shutdown'));

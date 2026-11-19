@@ -29,6 +29,7 @@ test('Pi SDK streams, calls communication tool, isolates and restores exact sess
   const requests: { model: string; messages: unknown[]; reasoning_effort?: string; tools?: { function: { name: string } }[] }[] = [];
   let nextTool: { name: string; arguments: string } | undefined;
   let holdNext = false;
+  let holdAfterTool = false;
   let nextText: string | undefined;
   let release = () => {};
   let heldReady = () => {};
@@ -51,6 +52,7 @@ test('Pi SDK streams, calls communication tool, isolates and restores exact sess
     };
     if (holdNext) { holdNext = false; release = finish; heldReady(); }
     else finish();
+    if (tool && holdAfterTool) { holdAfterTool = false; holdNext = true; }
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const address = server.address(); assert.ok(address && typeof address === 'object');
@@ -253,6 +255,59 @@ test('Pi SDK streams, calls communication tool, isolates and restores exact sess
   nextTool = { name: 'bash', arguments: JSON.stringify({ command: "printf 'ABORT_TOOL\\n'; sleep 5" }) };
   workspace.humanDirect(coder.id, 'abort local tool');
   await waitFor(() => transcriptEntries(runner.inspect(coder).messages, 'coder').some(e => e.state === 'running' && e.text.includes('ABORT_TOOL')));
+  const publicWhileBusy = workspace.humanChannel(channel.id, 'Answer while the same-directory shell is still working');
+  await waitFor(() => store.deliveries(assistant.id).some(d => d.messageId === publicWhileBusy.id && d.state === 'done'));
+  assert.equal(workspace.status(coder.id), 'working', 'channel reply does not wait for the worker');
+  nextTool = { name: 'write', arguments: JSON.stringify({ path: 'blocked.txt', content: 'must not overwrite' }) };
+  const blocked = workspace.humanChannel(channel.id, 'Try an overlapping mutation');
+  await waitFor(() => store.deliveries(assistant.id).some(d => d.messageId === blocked.id && d.state === 'done'));
+  const blockedResult = transcriptEntries(runner.inspect(assistant).messages, assistant.name).filter(e => e.kind === 'tool').at(-1)!;
+  assert.equal(blockedResult.state, 'error'); assert.match(blockedResult.text, /Workspace file conflict.*@coder/s);
   workspace.stop(coder.id); await workspace.idle();
   assert.ok(!transcriptEntries(runner.inspect(coder).messages, 'coder').some(e => e.state === 'running' || e.state === 'pending'), 'abort clears transient tool state');
+  nextTool = { name: 'write', arguments: JSON.stringify({ path: 'blocked.txt', content: 'after abort settlement' }) };
+  workspace.humanChannel(channel.id, 'Retry after the owner has stopped'); await workspace.idle();
+  assert.equal(readFileSync(join(dir, 'blocked.txt'), 'utf8'), 'after abort settlement');
+
+  writeFileSync(join(dir, 'blocked.txt'), 'human edited this');
+  nextTool = { name: 'write', arguments: JSON.stringify({ path: 'blocked.txt', content: 'stale overwrite' }) };
+  workspace.humanChannel(channel.id, 'Attempt stale write'); await workspace.idle();
+  const staleResult = transcriptEntries(runner.inspect(assistant).messages, assistant.name).filter(e => e.kind === 'tool').at(-1)!;
+  assert.equal(staleResult.state, 'error'); assert.match(staleResult.text, /changed since your last read/);
+  assert.equal(readFileSync(join(dir, 'blocked.txt'), 'utf8'), 'human edited this');
+  nextTool = { name: 'read', arguments: JSON.stringify({ path: 'blocked.txt' }) };
+  workspace.humanDirect(assistant.id, 'Read current content'); await workspace.idle();
+  nextTool = { name: 'edit', arguments: JSON.stringify({ path: 'blocked.txt', edits: [{ oldText: 'human edited this', newText: 'human edited this; reconciled' }] }) };
+  workspace.humanDirect(assistant.id, 'Apply reconciled edit'); await workspace.idle();
+  assert.equal(readFileSync(join(dir, 'blocked.txt'), 'utf8'), 'human edited this; reconciled');
+
+  workspace.resume(coder.id);
+  for (const tool of [
+    { name: 'bash', arguments: JSON.stringify({ command: "printf 'FINISHED_TOOL\\n'" }) },
+    { name: 'write', arguments: JSON.stringify({ path: 'worker.txt', content: 'worker finished writing' }) },
+  ]) {
+    nextTool = tool; holdAfterTool = true;
+    started = new Promise<void>(resolve => { heldReady = resolve; });
+    workspace.humanDirect(coder.id, 'Finish tool, then hold model stream'); await started;
+    const releaseModel = release;
+    nextTool = { name: 'bash', arguments: JSON.stringify({ command: "printf 'PEER_NOT_BLOCKED\\n'" }) };
+    const peer = workspace.humanChannel(channel.id, 'Use the same cwd while the worker is still thinking');
+    await waitFor(() => store.deliveries(assistant.id).some(d => d.messageId === peer.id && d.state === 'done'));
+    const result = transcriptEntries(runner.inspect(assistant).messages, assistant.name).filter(e => e.kind === 'tool').at(-1)!;
+    assert.equal(result.state, 'done', result.text); assert.match(result.text, /PEER_NOT_BLOCKED/);
+    assert.equal(workspace.status(coder.id), 'working');
+    releaseModel(); await workspace.idle();
+  }
+  holdNext = true; started = new Promise<void>(resolve => { heldReady = resolve; });
+  workspace.humanDirect(coder.id, 'Hold worker model stream'); await started;
+  const releaseWorker = release;
+  holdNext = true; started = new Promise<void>(resolve => { heldReady = resolve; });
+  workspace.humanChannel(channel.id, 'Hold assistant model stream concurrently'); await started;
+  const releaseAssistant = release;
+  await waitFor(() => [coder, assistant].every(agent => transcriptEntries(runner.inspect(agent).messages, agent.name).some(e => e.state === 'running' && e.text === 'Local mock reply.')));
+  assert.equal(workspace.status(coder.id), 'working'); assert.equal(workspace.status(assistant.id), 'working');
+  releaseAssistant();
+  await waitFor(() => workspace.status(assistant.id) === 'idle');
+  assert.equal(workspace.status(coder.id), 'working', 'separate streams settle independently');
+  releaseWorker(); await workspace.idle();
 });
